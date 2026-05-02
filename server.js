@@ -5,40 +5,43 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
+const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
-// Health check
 app.get("/", (req, res) => {
   res.json({ status: "Vitalyze AI Backend is running 💚" });
 });
 
-// Main Claude proxy route
+// Health coach chat
 app.post("/claude", async (req, res) => {
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: "API key not configured" });
-    }
+    const { messages, system } = req.body;
 
-    const response = await fetch(ANTHROPIC_API, {
+    const systemPrompt = system || "You are an empathetic AI health coach named Vitalyze. Analyze the user's health data, give personalized insights, celebrate wins, flag concerns gently. Keep responses concise (2-4 sentences), warm, and actionable. For serious symptoms, recommend a doctor.";
+
+    const lastMessage = messages[messages.length - 1].content;
+    const prompt = `${systemPrompt}\n\nUser: ${lastMessage}`;
+
+    const response = await fetch(`${GEMINI_API}?key=${apiKey}`, {
       method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(req.body),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 1000, temperature: 0.7 }
+      }),
     });
 
     const data = await response.json();
-    res.json(data);
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't respond right now.";
+
+    res.json({ content: [{ type: "text", text }] });
   } catch (err) {
-    console.error("Claude API error:", err);
-    res.status(500).json({ error: "Server error", message: err.message });
+    console.error("Error:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// Food calorie scan route
+// Food calorie scanner
 app.post("/scan-food", async (req, res) => {
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -46,33 +49,29 @@ app.post("/scan-food", async (req, res) => {
 
     if (!imageBase64) return res.status(400).json({ error: "No image provided" });
 
-    const response = await fetch(ANTHROPIC_API, {
+    const prompt = `You are a nutrition expert. Analyze this food image and respond ONLY with valid JSON (no markdown):
+{"dish":"Name","calories":350,"protein":20,"carbs":40,"fat":12,"fiber":5,"items":["rice - 200cal","dal - 150cal"],"tip":"One short health tip","healthScore":7}`;
+
+    const response = await fetch(`${GEMINI_API}?key=${apiKey}`, {
       method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `You are a nutrition expert AI. Analyze food photos and respond ONLY with valid JSON:
-{"dish":"Name","calories":350,"protein":20,"carbs":40,"fat":12,"fiber":5,"items":["rice - 200cal"],"tip":"One short health tip","healthScore":7}`,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imageBase64 }},
-            { type: "text", text: "Analyze this food and give calorie + nutrition breakdown in JSON." },
-          ],
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: "image/jpeg", data: imageBase64 } }
+          ]
         }],
+        generationConfig: { maxOutputTokens: 1000, temperature: 0.3 }
       }),
     });
 
     const data = await response.json();
-    const text = data.content?.[0]?.text || "{}";
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     const result = JSON.parse(text.replace(/```json|```/g, "").trim());
     res.json(result);
   } catch (err) {
+    console.error("Error:", err);
     res.status(500).json({ error: "Could not analyze food image" });
   }
 });
